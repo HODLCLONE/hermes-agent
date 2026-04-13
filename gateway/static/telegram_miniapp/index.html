@@ -661,8 +661,8 @@ body {
 <!-- TOKEN GATE (browser-only, hidden for Telegram) -->
 <div id="token-gate" style="display:none;position:fixed;inset:0;z-index:9999;background:var(--bg,#0c0c10);flex-direction:column;align-items:center;justify-content:center;padding:40px 24px;text-align:center;">
   <div style="font-size:32px;margin-bottom:8px">&#128274;</div>
-  <div style="font-size:16px;font-weight:600;margin-bottom:4px">Access Required</div>
-  <div style="font-size:13px;color:var(--hint);margin-bottom:24px;line-height:1.5">
+  <div id="token-gate-title" style="font-size:16px;font-weight:600;margin-bottom:4px">Access Required</div>
+  <div id="token-gate-copy" style="font-size:13px;color:var(--hint);margin-bottom:24px;line-height:1.5">
     Enter your Hermes API token to continue.<br>Use the <code>API_SERVER_KEY</code> from your active Hermes profile environment.
   </div>
   <input type="password" id="token-input" placeholder="API_SERVER_KEY" autocomplete="off"
@@ -886,18 +886,26 @@ function closeDrawer() {
   WebApp?.HapticFeedback?.impactOccurred('light');
 }
 
-async function loadCommands() {
+async function loadCommands(opts = {}) {
+  const required = !!opts.required;
   try {
     const data = await api('/api/commands');
     const canonicalSessionId = data?.auth?.canonical_session_id;
+    if (required && isTelegram && !canonicalSessionId) {
+      throw new Error('Telegram auth succeeded but no canonical DM session was returned.');
+    }
     if (canonicalSessionId && sessionId !== canonicalSessionId) {
       sessionId = canonicalSessionId;
       persistSession();
     }
     allCommands = data.commands || [];
     renderDrawer(allCommands, '');
+    return data;
   } catch(e) {
-    document.getElementById('menu-loading').textContent = 'Failed to load commands';
+    const message = e?.message || 'Failed to load commands';
+    document.getElementById('menu-loading').textContent = message;
+    if (required) throw new Error(message);
+    return null;
   }
 }
 
@@ -975,9 +983,47 @@ function runCmdFromDrawer(name, needsArgs) {
 }
 
 // ─── TOKEN GATE (browser-only) ───────────────────────────────────────────────
-function showTokenGate() {
-  document.getElementById('token-gate').style.display = 'flex';
+function tokenGateElements() {
+  return {
+    gate: document.getElementById('token-gate'),
+    title: document.getElementById('token-gate-title'),
+    copy: document.getElementById('token-gate-copy'),
+    input: document.getElementById('token-input'),
+    button: document.getElementById('token-submit'),
+    error: document.getElementById('token-error'),
+  };
 }
+
+function showTokenGate() {
+  const { gate, title, copy, input, button, error } = tokenGateElements();
+  title.textContent = 'Access Required';
+  copy.innerHTML = 'Enter your Hermes API token to continue.<br>Use the <code>API_SERVER_KEY</code> from your active Hermes profile environment.';
+  input.value = '';
+  input.disabled = false;
+  input.style.display = '';
+  button.style.display = '';
+  button.disabled = false;
+  button.textContent = 'Connect';
+  button.onclick = submitToken;
+  error.textContent = '';
+  error.style.display = 'none';
+  gate.style.display = 'flex';
+}
+
+function showTelegramBootstrapError(message) {
+  const { gate, title, copy, input, button, error } = tokenGateElements();
+  title.textContent = 'Telegram launch failed';
+  copy.innerHTML = `Hermes could not authenticate this Telegram mini app launch.<br><br><span style="color:var(--text)">${esc(message || 'Missing Telegram auth context.')}</span>`;
+  input.style.display = 'none';
+  button.style.display = '';
+  button.disabled = false;
+  button.textContent = 'Retry';
+  button.onclick = () => window.location.reload();
+  error.textContent = '';
+  error.style.display = 'none';
+  gate.style.display = 'flex';
+}
+
 function hideTokenGate() {
   document.getElementById('token-gate').style.display = 'none';
 }
@@ -2053,8 +2099,8 @@ window.cmdList = [
       userId = WebApp.initDataUnsafe.user.id;
     }
 
-    // Telegram-authenticated launches should reuse the canonical Telegram DM session.
-    await loadCommands();
+    // Telegram-authenticated launches must resolve the canonical Telegram DM session.
+    await loadCommands({ required: true });
 
     if (!sessionId) {
       let savedSid = null;
@@ -2083,7 +2129,10 @@ window.cmdList = [
       if (activeTab === 'cron') loadCron();
       await checkConn();
     }, 30000);
-  } catch(e) { console.error('[Hermes TUI] init error:', e); }
+  } catch(e) {
+    console.error('[Hermes TUI] init error:', e);
+    showTelegramBootstrapError(e?.message || 'Unknown Telegram mini app bootstrap error.');
+  }
 })();
 </script>
 </body>

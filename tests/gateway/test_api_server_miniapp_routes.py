@@ -113,6 +113,8 @@ async def test_miniapp_static_routes_serve_html():
         assert resp.headers["Content-Type"].startswith("text/html")
         text = await resp.text()
         assert "Hermes Mini App (experimental)" in text
+        assert "Telegram launch failed" in text
+        assert "await loadCommands({ required: true });" in text
 
 
 @pytest.mark.asyncio
