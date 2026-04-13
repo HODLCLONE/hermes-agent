@@ -1,0 +1,18 @@
+# Example Cloudflare Tunnel config for the Hermes Telegram Mini App
+#
+# 1. Install cloudflared
+# 2. cloudflared tunnel login
+# 3. cloudflared tunnel create hermes-miniapp
+# 4. cloudflared tunnel route dns hermes-miniapp miniapp.example.com
+# 5. Copy this file to ~/.cloudflared/config.yml and replace placeholders
+# 6. Run: cloudflared tunnel run hermes-miniapp
+#
+# The Hermes miniapp launcher defaults to http://127.0.0.1:8765/miniapp/
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/YOU/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: miniapp.example.com
+    service: http://127.0.0.1:8765
+  - service: http_status:404

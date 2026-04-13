@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import shutil
 import socket as _socket
 import re
 import sqlite3
@@ -234,7 +235,10 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Telegram-Init-Data"
+    ),
 }
 
 
@@ -385,6 +389,25 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._telegram_miniapp_enabled: bool = str(
+            extra.get("telegram_miniapp_enabled", os.getenv("TELEGRAM_MINIAPP_ENABLED", ""))
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._telegram_bot_token: str = str(
+            extra.get("telegram_bot_token", os.getenv("TELEGRAM_BOT_TOKEN", ""))
+        ).strip()
+        allowed_users_raw = extra.get("telegram_allowed_users", os.getenv("TELEGRAM_ALLOWED_USERS", ""))
+        if isinstance(allowed_users_raw, str):
+            allowed_items = allowed_users_raw.split(",")
+        elif isinstance(allowed_users_raw, (list, tuple, set)):
+            allowed_items = allowed_users_raw
+        else:
+            allowed_items = [allowed_users_raw] if allowed_users_raw else []
+        self._telegram_allowed_users: set[str] = {
+            str(item).strip() for item in allowed_items if str(item).strip()
+        }
+        self._telegram_owner_id: str = str(
+            extra.get("telegram_owner_id", os.getenv("TELEGRAM_OWNER_ID", ""))
+        ).strip()
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -464,27 +487,54 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    def _authenticate_request(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
+        """Authenticate API requests via bearer token or Telegram miniapp init-data."""
+        from gateway.miniapp_auth import resolve_miniapp_auth
+        from gateway.session import SessionSource, build_session_key
+
+        result = resolve_miniapp_auth(
+            request.headers,
+            api_key=self._api_key,
+            bot_token=self._telegram_bot_token if self._telegram_miniapp_enabled else "",
+            owner_id=self._telegram_owner_id or None,
+            allowed_users=self._telegram_allowed_users if self._telegram_miniapp_enabled else set(),
+        )
+        if not result.ok:
+            message = result.error_message or "Invalid API key"
+            code = result.error_code or "invalid_api_key"
+            return {}, web.json_response(_openai_error(message, code=code), status=401)
+
+        auth_context: Dict[str, Any] = {"mode": result.mode}
+        if result.telegram_user_id:
+            auth_context["telegram_user_id"] = result.telegram_user_id
+        if result.display_name:
+            auth_context["display_name"] = result.display_name
+        if result.telegram_user:
+            auth_context["telegram_user"] = result.telegram_user
+        if result.mode == "telegram_miniapp" and result.telegram_user_id:
+            auth_context["canonical_session_id"] = build_session_key(
+                SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_type="dm",
+                    chat_id=result.telegram_user_id,
+                    user_id=result.telegram_user_id,
+                    user_name=result.display_name,
+                )
+            )
+
+        request["auth_context"] = auth_context
+        return auth_context, None
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
-        Validate Bearer token from Authorization header.
+        Validate bearer token or Telegram miniapp init-data.
 
         Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
+        If no API key is configured, all requests are allowed unless Telegram
+        miniapp auth is explicitly enabled.
         """
-        if not self._api_key:
-            return None  # No key configured — allow all (local-only use)
-
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
-
-        return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
-            status=401,
-        )
+        _, auth_err = self._authenticate_request(request)
+        return auth_err
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -563,7 +613,170 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        cpu_percent = None
+        memory_percent = None
+        uptime = None
+        try:
+            import psutil  # type: ignore
+
+            cpu_percent = psutil.cpu_percent(interval=None)
+            memory_percent = psutil.virtual_memory().percent
+            uptime = max(0, int(time.time() - psutil.boot_time()))
+        except Exception:
+            pass
+
+        disk_percent = None
+        try:
+            usage = shutil.disk_usage("/")
+            if usage.total:
+                disk_percent = round((usage.used / usage.total) * 100, 2)
+        except Exception:
+            pass
+
+        if uptime is None:
+            uptime = int(time.monotonic())
+
+        return web.json_response(
+            {
+                "status": "ok",
+                "platform": "hermes-agent",
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory_percent,
+                "disk_percent": disk_percent,
+                "uptime": uptime,
+            }
+        )
+
+    async def _handle_processes(self, request: "web.Request") -> "web.Response":
+        """GET /api/processes — list tracked background processes."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from tools.process_registry import process_registry
+
+            processes = process_registry.list_sessions()
+        except Exception as e:
+            logger.warning("Failed to list background processes: %s", e)
+            processes = []
+        return web.json_response({"processes": processes})
+
+    async def _handle_miniapp_index(self, request: "web.Request") -> "web.Response":
+        """Serve the Telegram miniapp HTML shell."""
+        if not self._telegram_miniapp_enabled:
+            return web.json_response(_openai_error("Telegram miniapp is disabled", code="miniapp_disabled"), status=404)
+
+        try:
+            from gateway.miniapp_assets import read_miniapp_asset
+
+            html = read_miniapp_asset("index.html")
+        except FileNotFoundError:
+            return web.json_response(_openai_error("Miniapp asset not found", code="miniapp_asset_missing"), status=404)
+        except Exception as e:
+            logger.error("Failed to load miniapp asset: %s", e, exc_info=True)
+            return web.json_response(_openai_error(f"Failed to load miniapp asset: {e}", code="miniapp_asset_error"), status=500)
+
+        return web.Response(body=html, content_type="text/html")
+
+    async def _handle_commands_index(self, request: "web.Request") -> "web.Response":
+        """GET /api/commands — expose gateway command metadata for the miniapp."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        commands = []
+        for cmd in COMMAND_REGISTRY:
+            if cmd.cli_only:
+                continue
+            commands.append(
+                {
+                    "name": cmd.name,
+                    "description": cmd.description,
+                    "category": cmd.category,
+                    "aliases": list(cmd.aliases),
+                    "args_hint": cmd.args_hint,
+                    "gateway_only": bool(cmd.gateway_only),
+                }
+            )
+        return web.json_response({"commands": commands})
+
+    async def _handle_command(self, request: "web.Request") -> "web.Response":
+        """POST /api/command — execute a constrained slash-command subset."""
+        auth_context, auth_err = self._authenticate_request(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        raw_command = str((body or {}).get("command") or "").strip()
+        if not raw_command.startswith("/"):
+            return web.json_response({"error": "Unknown or unsupported command"}, status=400)
+
+        command_body = raw_command[1:].strip()
+        command_name = command_body.split()[0] if command_body else ""
+        if not command_name:
+            return web.json_response({"error": "Unknown or unsupported command"}, status=400)
+
+        from hermes_cli.commands import gateway_help_lines, resolve_command
+
+        resolved = resolve_command(command_name)
+        if resolved is None:
+            return web.json_response({"error": "Unknown or unsupported command"}, status=400)
+
+        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        session_id = provided_session_id or str(auth_context.get("canonical_session_id") or "").strip()
+
+        output: Optional[str] = None
+        if resolved.name == "help":
+            output = "\n".join(gateway_help_lines())
+        elif resolved.name == "usage":
+            if not session_id:
+                output = "No usage data available for this session."
+            else:
+                db = self._ensure_session_db()
+                session = db.get_session(session_id) if db is not None else None
+                if session:
+                    input_tokens = int(session.get("input_tokens") or 0)
+                    output_tokens = int(session.get("output_tokens") or 0)
+                    cache_read_tokens = int(session.get("cache_read_tokens") or 0)
+                    cache_write_tokens = int(session.get("cache_write_tokens") or 0)
+                    total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+                    lines = [
+                        "📊 **Session Token Usage**",
+                        f"Model: `{session.get('model') or self._model_name}`",
+                        f"Input tokens: {input_tokens:,}",
+                    ]
+                    if cache_read_tokens:
+                        lines.append(f"Cache read tokens: {cache_read_tokens:,}")
+                    if cache_write_tokens:
+                        lines.append(f"Cache write tokens: {cache_write_tokens:,}")
+                    lines.extend(
+                        [
+                            f"Output tokens: {output_tokens:,}",
+                            f"Total: {total_tokens:,}",
+                        ]
+                    )
+                    output = "\n".join(lines)
+                else:
+                    output = "No usage data available for this session."
+        else:
+            return web.json_response({"error": "Unknown or unsupported command"}, status=400)
+
+        return web.json_response(
+            {
+                "ok": True,
+                "command": {"raw": raw_command, "canonical": resolved.name},
+                "output": output,
+                "session_id": session_id or None,
+                "auth": auth_context,
+            }
+        )
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -1785,6 +1998,13 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/api/processes", self._handle_processes)
+            self._app.router.add_get("/api/commands", self._handle_commands_index)
+            self._app.router.add_post("/api/command", self._handle_command)
+            if self._telegram_miniapp_enabled:
+                self._app.router.add_get("/miniapp", self._handle_miniapp_index)
+                self._app.router.add_get("/miniapp/", self._handle_miniapp_index)
+                self._app.router.add_get("/miniapp/index.html", self._handle_miniapp_index)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

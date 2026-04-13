@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
     from telegram.ext import (
         Application,
         CommandHandler,
@@ -36,6 +36,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    WebAppInfo = Any
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
@@ -1050,6 +1051,39 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_miniapp_launcher(
+        self,
+        chat_id: str,
+        url: str,
+        *,
+        button_text: str = "Open Hermes",
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram web_app button that launches the Hermes mini app."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        thread_id = metadata.get("thread_id") if metadata else None
+        reply_to_id = int(reply_to) if reply_to else None
+        effective_thread_id = int(thread_id) if thread_id else None
+
+        try:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(button_text, web_app=WebAppInfo(url=url))]]
+            )
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text="Tap below to open the Hermes mini app.",
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                message_thread_id=effective_thread_id,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.error("[%s] Failed to send Telegram mini app launcher: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send_exec_approval(

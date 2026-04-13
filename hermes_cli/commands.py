@@ -87,6 +87,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("miniapp", "Open the Hermes mini app launcher", "Session",
+               gateway_only=True, aliases=("app",)),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
