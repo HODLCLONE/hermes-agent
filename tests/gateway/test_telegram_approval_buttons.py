@@ -213,6 +213,45 @@ class TestTelegramApprovalCallback:
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "Denied" in edit_kwargs["text"]
 
+
+class TestTelegramMiniAppLauncher:
+    """Test mini app launcher button delivery."""
+
+    @pytest.mark.asyncio
+    async def test_sends_inline_web_app_button(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 314
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_miniapp_launcher(
+            chat_id="12345",
+            url="https://example.com/miniapp/",
+        )
+
+        assert result.success is True
+        assert result.message_id == "314"
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs["chat_id"] == 12345
+        assert kwargs["reply_markup"] is not None
+        assert "mini app" in kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_sends_launcher_in_thread(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 315
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_miniapp_launcher(
+            chat_id="12345",
+            url="https://example.com/miniapp/",
+            metadata={"thread_id": "999"},
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs.get("message_thread_id") == 999
+
     @pytest.mark.asyncio
     async def test_already_resolved(self):
         adapter = _make_adapter()

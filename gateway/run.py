@@ -2676,6 +2676,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "app":
+            return await self._handle_app_command(event)
+
         if canonical == "restart":
             return await self._handle_restart_command(event)
         
@@ -4169,6 +4172,60 @@ class GatewayRunner:
         except Exception:
             pass
         return "\n".join(lines)
+
+    def _resolve_telegram_miniapp_url(self) -> Optional[str]:
+        """Resolve the public Telegram mini app URL from config/env."""
+        from gateway.config import Platform
+
+        telegram_cfg = self.config.platforms.get(Platform.TELEGRAM) if getattr(self, "config", None) else None
+        api_cfg = self.config.platforms.get(Platform.API_SERVER) if getattr(self, "config", None) else None
+
+        candidates = [
+            os.getenv("TELEGRAM_MINIAPP_URL", ""),
+            ((telegram_cfg.extra or {}).get("miniapp_url") if telegram_cfg else ""),
+            ((api_cfg.extra or {}).get("miniapp_url") if api_cfg else ""),
+            ((api_cfg.extra or {}).get("public_url") if api_cfg else ""),
+        ]
+
+        for candidate in candidates:
+            raw = str(candidate or "").strip()
+            if not raw:
+                continue
+            if raw.endswith("/miniapp/"):
+                return raw
+            if raw.endswith("/miniapp"):
+                return raw + "/"
+            if raw.startswith("http://") or raw.startswith("https://"):
+                return raw.rstrip("/") + "/miniapp/"
+        return None
+
+    async def _handle_app_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /app command — send a Telegram mini app launcher button."""
+        from gateway.config import Platform
+
+        if event.source.platform != Platform.TELEGRAM:
+            return "The /app launcher is currently only available on Telegram."
+
+        url = self._resolve_telegram_miniapp_url()
+        if not url:
+            return (
+                "Hermes mini app is not configured yet. Set TELEGRAM_MINIAPP_URL, "
+                "platforms.telegram.extra.miniapp_url, or platforms.api_server.extra.public_url."
+            )
+
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        if adapter and hasattr(adapter, "send_miniapp_launcher"):
+            result = await adapter.send_miniapp_launcher(
+                chat_id=event.source.chat_id,
+                url=url,
+                reply_to=event.message_id,
+                metadata=getattr(event, "metadata", None),
+            )
+            if result.success:
+                return None
+            return f"Failed to open the Hermes mini app launcher: {result.error or 'unknown error'}"
+
+        return f"Open the Hermes mini app here: {url}"
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""
