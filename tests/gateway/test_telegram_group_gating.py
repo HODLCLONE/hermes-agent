@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None):
+def _make_adapter(
+    require_mention=None,
+    free_response_chats=None,
+    mention_patterns=None,
+    reply_to_bot_triggers=None,
+):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -15,6 +20,8 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["free_response_chats"] = free_response_chats
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    if reply_to_bot_triggers is not None:
+        extra["reply_to_bot_triggers"] = reply_to_bot_triggers
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -28,7 +35,16 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
     return adapter
 
 
-def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=None, caption=None, caption_entities=None):
+def _group_message(
+    text="hello",
+    *,
+    chat_id=-100,
+    reply_to_bot=False,
+    entities=None,
+    caption=None,
+    caption_entities=None,
+    sender_is_bot=False,
+):
     reply_to_message = None
     if reply_to_bot:
         reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999))
@@ -39,6 +55,7 @@ def _group_message(text="hello", *, chat_id=-100, reply_to_bot=False, entities=N
         caption_entities=caption_entities or [],
         chat=SimpleNamespace(id=chat_id, type="group"),
         reply_to_message=reply_to_message,
+        from_user=SimpleNamespace(id=1234, is_bot=sender_is_bot),
     )
 
 
@@ -58,8 +75,26 @@ def test_group_messages_can_require_direct_trigger_via_config():
 
     assert adapter._should_process_message(_group_message("hello everyone")) is False
     assert adapter._should_process_message(_group_message("hi @hermes_bot", entities=[_mention_entity("hi @hermes_bot")])) is True
-    assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
+    assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is False
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is True
+
+
+def test_reply_to_bot_can_be_opted_back_in_for_groups():
+    adapter = _make_adapter(require_mention=True, reply_to_bot_triggers=True)
+
+    assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
+
+
+def test_other_bots_are_ignored_even_if_they_mention_us():
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot",
+            entities=[_mention_entity("hi @hermes_bot")],
+            sender_is_bot=True,
+        )
+    ) is False
 
 
 def test_free_response_chats_bypass_mention_requirement():
@@ -90,6 +125,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     (hermes_home / "config.yaml").write_text(
         "telegram:\n"
         "  require_mention: true\n"
+        "  reply_to_bot_triggers: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
@@ -99,6 +135,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("TELEGRAM_REPLY_TO_BOT_TRIGGERS", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
 
@@ -106,5 +143,6 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
+    assert __import__("os").environ["TELEGRAM_REPLY_TO_BOT_TRIGGERS"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"

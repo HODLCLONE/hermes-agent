@@ -613,6 +613,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(telegram_cfg, dict):
                 if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
                     os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                if "reply_to_bot_triggers" in telegram_cfg and not os.getenv("TELEGRAM_REPLY_TO_BOT_TRIGGERS"):
+                    os.environ["TELEGRAM_REPLY_TO_BOT_TRIGGERS"] = str(telegram_cfg["reply_to_bot_triggers"]).lower()
                 if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
                     import json as _json
                     os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])

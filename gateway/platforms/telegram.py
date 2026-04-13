@@ -2025,6 +2025,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_reply_to_bot_triggers(self) -> bool:
+        """Return whether group replies to the bot should auto-trigger a response."""
+        configured = self.config.extra.get("reply_to_bot_triggers")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("TELEGRAM_REPLY_TO_BOT_TRIGGERS", "false").lower() in ("true", "1", "yes", "on")
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
@@ -2116,6 +2125,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _should_ignore_sender(self, message: Message) -> bool:
+        """Ignore messages from other bots to prevent cross-agent loops."""
+        sender = getattr(message, "from_user", None)
+        if not sender:
+            return False
+        is_bot = getattr(sender, "is_bot", False)
+        if isinstance(is_bot, str):
+            is_bot = is_bot.lower() in ("true", "1", "yes", "on")
+        elif not isinstance(is_bot, bool):
+            is_bot = False
+        if not is_bot:
+            return False
+        sender_id = getattr(sender, "id", None)
+        self_id = getattr(self._bot, "id", None) if self._bot else None
+        return sender_id != self_id
+
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         if not text or not self._bot or not getattr(self._bot, "username", None):
             return text
@@ -2134,6 +2159,8 @@ class TelegramAdapter(BasePlatformAdapter):
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
         """
+        if self._should_ignore_sender(message):
+            return False
         if not self._is_group_chat(message):
             return True
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
@@ -2142,7 +2169,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if is_command:
             return True
-        if self._is_reply_to_bot(message):
+        if self._is_reply_to_bot(message) and self._telegram_reply_to_bot_triggers():
             return True
         if self._message_mentions_bot(message):
             return True
