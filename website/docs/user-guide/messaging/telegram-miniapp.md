@@ -64,6 +64,28 @@ TELEGRAM_BOT_TOKEN=123456:ABCDEF...
 TELEGRAM_ALLOWED_USERS=123456789
 ```
 
+## One-command local launch
+
+For local bring-up, Hermes now includes a helper launcher:
+
+```bash
+cd /opt/hermes-agent/source
+scripts/run_telegram_miniapp_server.sh
+```
+
+By default it:
+- loads your active Hermes profile environment
+- enables the API server if needed
+- defaults to `127.0.0.1:8765`
+- enables the Telegram Mini App backend
+- serves the bundled UI at `http://127.0.0.1:8765/miniapp/`
+
+You can override the bind address or port with standard env vars such as:
+
+```bash
+API_SERVER_HOST=0.0.0.0 API_SERVER_PORT=8642 scripts/run_telegram_miniapp_server.sh
+```
+
 ## Expose Hermes over HTTPS
 
 Telegram Mini Apps run in the Telegram client and need HTTPS to reach Hermes from outside localhost.

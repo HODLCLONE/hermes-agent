@@ -116,6 +116,9 @@ The bot should come online within seconds. Send it a message on Telegram to veri
 
 Hermes also ships an optional built-in Telegram Mini App surface served by the API server at `/miniapp/`.
 
+For a quick local bring-up from the repo checkout, run:
+`scripts/run_telegram_miniapp_server.sh`
+
 See [Telegram Mini App](./telegram-miniapp.md) for setup, HTTPS exposure, BotFather menu button configuration, and Mini App auth troubleshooting.
 
 ## Webhook Mode
