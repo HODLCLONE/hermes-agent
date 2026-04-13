@@ -1031,7 +1031,7 @@ function initAfterAuth() {
   loadModelInfo();
   startDurationTimer();
   loadCommands();
-  addMsg('system', 'Hermes Terminal — type /help or tap menu for commands.');
+  addMsg('system', 'Hermes Mini App — type /help or tap menu for commands.');
   input.focus();
   setInterval(async () => {
     if (activeTab === 'status') loadStatus();
@@ -2067,7 +2067,7 @@ window.cmdList = [
     loadModelInfo();
     startDurationTimer();
 
-    addMsg('system', 'Hermes Terminal — type /help or tap menu for commands.');
+    addMsg('system', 'Hermes Mini App — type /help or tap menu for commands.');
     input.focus();
 
     setInterval(async () => {
