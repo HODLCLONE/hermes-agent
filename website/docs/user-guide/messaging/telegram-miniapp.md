@@ -96,6 +96,10 @@ Typical deployment patterns:
 - tunnel a local dev instance with something like Tailscale Funnel, Cloudflare Tunnel, or ngrok
 - deploy Hermes on a public VPS with TLS termination
 
+If you want a Cloudflare Tunnel starting point from the repo checkout, use:
+- `scripts/cloudflared-miniapp-config.yml.example`
+- set its service target to your local miniapp server (default: `127.0.0.1:8765`)
+
 Make sure the public origin you use is also listed in `platforms.api_server.extra.cors_origins` (or `API_SERVER_CORS_ORIGINS`).
 
 ## Configure the BotFather menu button
