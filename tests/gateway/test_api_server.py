@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.session import SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -1784,6 +1785,44 @@ class TestSessionIdHeader:
                 )
             assert resp.status == 200
             assert resp.headers.get("X-Hermes-Session-Id") is not None
+
+    @pytest.mark.asyncio
+    async def test_telegram_authenticated_request_without_header_uses_canonical_dm_session_id(self, auth_adapter):
+        """Telegram Mini App requests should share the same canonical DM session as Telegram chat."""
+        mock_result = {"final_response": "Hello from shared session!", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        expected_session_id = build_session_key(
+            SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_type="dm",
+                chat_id="767588928",
+                user_id="767588928",
+            )
+        )
+
+        def _mock_check_auth(request):
+            request["auth_context"] = {
+                "mode": "telegram_miniapp",
+                "telegram_user_id": "767588928",
+                "display_name": "UncleHODL",
+                "telegram_user": {"id": 767588928, "first_name": "UncleHODL"},
+                "canonical_session_id": expected_session_id,
+            }
+            return None
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_check_auth", side_effect=_mock_check_auth), \
+                 patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi from miniapp"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") == expected_session_id
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == expected_session_id
 
     @pytest.mark.asyncio
     async def test_provided_session_id_is_used_and_echoed(self, auth_adapter):

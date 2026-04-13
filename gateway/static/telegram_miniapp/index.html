@@ -889,6 +889,11 @@ function closeDrawer() {
 async function loadCommands() {
   try {
     const data = await api('/api/commands');
+    const canonicalSessionId = data?.auth?.canonical_session_id;
+    if (canonicalSessionId && sessionId !== canonicalSessionId) {
+      sessionId = canonicalSessionId;
+      persistSession();
+    }
     allCommands = data.commands || [];
     renderDrawer(allCommands, '');
   } catch(e) {
@@ -2044,26 +2049,29 @@ window.cmdList = [
     }
 
     // Load existing session or create a new one immediately (before user can send)
-    let savedSid = null;
-    if (CS) {
-      try { savedSid = await CS.getItem('hermes_sid'); } catch (_) {}
-    }
-    if (!savedSid) {
-      const token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-      sessionId = 'miniapp-' + token;
-      if (CS) {
-        try { await CS.setItem('hermes_sid', sessionId); } catch (_) {}
-      }
-    } else {
-      sessionId = savedSid;
-    }
-
     if (WebApp?.initDataUnsafe?.user?.id) {
       userId = WebApp.initDataUnsafe.user.id;
     }
 
-    // Pre-load commands now so drawer is instant on first open
-    loadCommands();
+    // Telegram-authenticated launches should reuse the canonical Telegram DM session.
+    await loadCommands();
+
+    if (!sessionId) {
+      let savedSid = null;
+      if (CS) {
+        try { savedSid = await CS.getItem('hermes_sid'); } catch (_) {}
+      }
+      if (!savedSid) {
+        const token = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+        sessionId = 'miniapp-' + token;
+        if (CS) {
+          try { await CS.setItem('hermes_sid', sessionId); } catch (_) {}
+        }
+      } else {
+        sessionId = savedSid;
+      }
+    }
+
     loadModelInfo();
     startDurationTimer();
 

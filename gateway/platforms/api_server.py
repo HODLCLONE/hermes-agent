@@ -52,6 +52,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -488,12 +489,50 @@ class APIServerAdapter(BasePlatformAdapter):
             "telegram_user_id": result.telegram_user_id,
             "display_name": result.display_name,
             "telegram_user": result.telegram_user,
+            "canonical_session_id": self._canonical_session_id_for_auth(
+                mode=result.mode,
+                telegram_user_id=result.telegram_user_id,
+            ),
         }
         try:
             request["auth_context"] = auth_context
         except Exception:
             pass
         return auth_context, None
+
+    def _canonical_session_id_for_auth(
+        self,
+        *,
+        mode: Optional[str],
+        telegram_user_id: Optional[str],
+    ) -> Optional[str]:
+        if mode != "telegram_miniapp":
+            return None
+        normalized_user_id = str(telegram_user_id or "").strip()
+        if not normalized_user_id:
+            return None
+        return build_session_key(
+            SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_type="dm",
+                chat_id=normalized_user_id,
+                user_id=normalized_user_id,
+            )
+        )
+
+    def _default_session_id_for_request(self, request: "web.Request") -> Optional[str]:
+        auth_context = request.get("auth_context") if hasattr(request, "get") else None
+        if isinstance(auth_context, dict):
+            canonical_session_id = str(auth_context.get("canonical_session_id") or "").strip()
+            if canonical_session_id:
+                return canonical_session_id
+        return None
+
+    def _resolve_request_session_id(self, request: "web.Request") -> str:
+        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if provided_session_id:
+            return provided_session_id
+        return self._default_session_id_for_request(request) or ""
 
     def _require_auth(self, request: "web.Request") -> Optional["web.Response"]:
         _, auth_error = self._authenticate_request(request)
@@ -840,7 +879,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._require_auth(request)
         if auth_err:
             return auth_err
-        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        session_id = self._resolve_request_session_id(request)
         return web.json_response(self._session_usage_payload(session_id))
 
     async def _handle_commands_index(self, request: "web.Request") -> "web.Response":
@@ -879,7 +918,7 @@ class APIServerAdapter(BasePlatformAdapter):
             args = str(payload.get("args") or "").strip()
             command_text = f"/{command_name} {args}".strip()
 
-        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        session_id = self._resolve_request_session_id(request)
         result, error_message, status = self._execute_supported_command(command_text or "", session_id or None)
         if error_message:
             return web.json_response({"error": error_message}, status=status)
@@ -1066,17 +1105,28 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
         else:
-            # Derive a stable session ID from the conversation fingerprint so
-            # that consecutive messages from the same Open WebUI (or similar)
-            # conversation map to the same Hermes session.  The first user
-            # message + system prompt are constant across all turns.
-            first_user = ""
-            for cm in conversation_messages:
-                if cm.get("role") == "user":
-                    first_user = cm.get("content", "")
-                    break
-            session_id = _derive_chat_session_id(system_prompt, first_user)
-            # history already set from request body above
+            canonical_session_id = self._default_session_id_for_request(request)
+            if canonical_session_id:
+                session_id = canonical_session_id
+                try:
+                    db = self._ensure_session_db()
+                    if db is not None:
+                        history = db.get_messages_as_conversation(session_id)
+                except Exception as e:
+                    logger.warning("Failed to load session history for %s: %s", session_id, e)
+                    history = []
+            else:
+                # Derive a stable session ID from the conversation fingerprint so
+                # that consecutive messages from the same Open WebUI (or similar)
+                # conversation map to the same Hermes session.  The first user
+                # message + system prompt are constant across all turns.
+                first_user = ""
+                for cm in conversation_messages:
+                    if cm.get("role") == "user":
+                        first_user = cm.get("content", "")
+                        break
+                session_id = _derive_chat_session_id(system_prompt, first_user)
+                # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)

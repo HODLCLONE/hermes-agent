@@ -2676,7 +2676,7 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
-        if canonical == "app":
+        if canonical == "miniapp":
             return await self._handle_app_command(event)
 
         if canonical == "restart":
@@ -4200,7 +4200,7 @@ class GatewayRunner:
         return None
 
     async def _handle_app_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /app command — send a Telegram mini app launcher button."""
+        """Handle /miniapp (alias /app) — send a Telegram mini app launcher button."""
         from gateway.config import Platform
 
         if event.source.platform != Platform.TELEGRAM:

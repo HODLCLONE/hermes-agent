@@ -280,6 +280,14 @@ class TestPendingCommandSafetyNet:
         assert resolve_command("reset") is not None
         assert resolve_command("reset").name == "new"  # alias
 
+    def test_miniapp_command_detected(self):
+        from hermes_cli.commands import resolve_command
+
+        assert resolve_command("miniapp") is not None
+        assert resolve_command("miniapp").name == "miniapp"
+        assert resolve_command("app") is not None
+        assert resolve_command("app").name == "miniapp"  # alias
+
     def test_unknown_command_not_detected(self):
         from hermes_cli.commands import resolve_command
 
