@@ -1869,3 +1869,40 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_accepts_multimodal_content_arrays(adapter):
+    app = _create_app(adapter)
+    captured = {}
+
+    async with TestClient(TestServer(app)) as cli:
+        async def _mock_run_agent(**kwargs):
+            captured.update(kwargs)
+            return (
+                {"final_response": "Processed attachment", "messages": [], "api_calls": 1},
+                {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            )
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "please inspect this"},
+                                {"type": "image_url", "image_url": {"url": "data:text/plain;base64,aGVsbG8gd29ybGQ="}},
+                            ],
+                        }
+                    ],
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["choices"][0]["message"]["content"] == "Processed attachment"
+
+    assert "please inspect this" in captured["user_message"]
+    assert "hello world" in captured["user_message"]

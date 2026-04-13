@@ -20,17 +20,24 @@ Requires:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+
+from agent.model_metadata import get_model_context_length
+from gateway.miniapp_assets import read_miniapp_asset
+from gateway.miniapp_auth import resolve_miniapp_auth
 
 try:
     from aiohttp import web
@@ -55,10 +62,28 @@ MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 
+_MINIAPP_IMAGE_ANALYSIS_PROMPT = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
 
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _resolve_runtime_agent_kwargs() -> dict[str, Any]:
+    from gateway.run import _resolve_runtime_agent_kwargs as _gateway_resolve_runtime_agent_kwargs
+
+    return _gateway_resolve_runtime_agent_kwargs()
+
+
+def _resolve_gateway_model(config: dict | None = None) -> str:
+    from gateway.run import _resolve_gateway_model as _gateway_resolve_gateway_model
+
+    return _gateway_resolve_gateway_model(config)
 
 
 class ResponseStore:
@@ -173,8 +198,8 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS, PATCH",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Telegram-Init-Data, X-Hermes-Session-Id",
 }
 
 
@@ -325,6 +350,25 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        miniapp_enabled_raw = extra.get(
+            "telegram_miniapp_enabled",
+            os.getenv("API_SERVER_TELEGRAM_MINIAPP_ENABLED", ""),
+        )
+        self._telegram_miniapp_enabled = str(miniapp_enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+        if self._telegram_miniapp_enabled:
+            self._telegram_bot_token: str = str(
+                extra.get("telegram_bot_token", os.getenv("TELEGRAM_BOT_TOKEN", "")) or ""
+            ).strip()
+            self._telegram_owner_id: str = str(
+                extra.get("telegram_owner_id", os.getenv("TELEGRAM_OWNER_ID", "")) or ""
+            ).strip()
+            self._telegram_allowed_users: set[str] = self._parse_allowed_users(
+                extra.get("telegram_allowed_users", os.getenv("TELEGRAM_ALLOWED_USERS", ""))
+            )
+        else:
+            self._telegram_bot_token = ""
+            self._telegram_owner_id = ""
+            self._telegram_allowed_users = set()
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -349,6 +393,18 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _parse_allowed_users(value: Any) -> set[str]:
+        if not value:
+            return set()
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [value]
+        return {str(item).strip() for item in items if str(item).strip()}
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -401,30 +457,51 @@ class APIServerAdapter(BasePlatformAdapter):
         return "*" in self._cors_origins or origin in self._cors_origins
 
     # ------------------------------------------------------------------
-    # Auth helper
+    # Auth helpers
     # ------------------------------------------------------------------
 
-    def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
-        """
-        Validate Bearer token from Authorization header.
-
-        Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
-        """
-        if not self._api_key:
-            return None  # No key configured — allow all (local-only use)
-
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
-
+    def _auth_error_response(self, code: str, message: str) -> "web.Response":
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {
+                "error": {
+                    "message": message,
+                    "type": "invalid_request_error",
+                    "code": code,
+                }
+            },
             status=401,
         )
+
+    def _authenticate_request(self, request: "web.Request") -> tuple[Optional[dict[str, Any]], Optional["web.Response"]]:
+        result = resolve_miniapp_auth(
+            request.headers,
+            api_key=self._api_key,
+            bot_token=self._telegram_bot_token,
+            owner_id=self._telegram_owner_id,
+            allowed_users=self._telegram_allowed_users,
+        )
+        if not result.ok:
+            return None, self._auth_error_response(result.error_code or "invalid_api_key", result.error_message or "Invalid API key")
+
+        auth_context = {
+            "mode": result.mode,
+            "telegram_user_id": result.telegram_user_id,
+            "display_name": result.display_name,
+            "telegram_user": result.telegram_user,
+        }
+        try:
+            request["auth_context"] = auth_context
+        except Exception:
+            pass
+        return auth_context, None
+
+    def _require_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        _, auth_error = self._authenticate_request(request)
+        return auth_error
+
+    def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        """Backward-compatible auth wrapper for existing handlers/tests."""
+        return self._require_auth(request)
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -443,6 +520,377 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
+
+    def _build_model_info_payload(self) -> dict[str, Any]:
+        resolved_model = _resolve_gateway_model()
+        model_id = resolved_model or self._model_name or "hermes-agent"
+        runtime = _resolve_runtime_agent_kwargs()
+        provider = runtime.get("provider")
+        context_length = get_model_context_length(
+            model_id,
+            provider=provider,
+            base_url=runtime.get("base_url"),
+        )
+        return {
+            "model": {
+                "id": model_id,
+                "name": model_id,
+                "provider": provider,
+                "context_length": context_length,
+            },
+            "id": model_id,
+            "name": model_id,
+            "provider": provider,
+            "model_short": self._short_model_name(model_id),
+            "context_length": context_length,
+        }
+
+    def _session_usage_payload(self, session_id: str) -> dict[str, Any]:
+        db = self._ensure_session_db()
+        session = db.get_session(session_id) if db is not None else None
+        usage = {
+            "available": bool(session),
+            "input_tokens": int((session or {}).get("input_tokens") or 0),
+            "output_tokens": int((session or {}).get("output_tokens") or 0),
+            "cache_read_tokens": int((session or {}).get("cache_read_tokens") or 0),
+            "cache_write_tokens": int((session or {}).get("cache_write_tokens") or 0),
+            "reasoning_tokens": int((session or {}).get("reasoning_tokens") or 0),
+            "estimated_cost_usd": float((session or {}).get("estimated_cost_usd") or 0),
+        }
+        usage["total_tokens"] = (
+            usage["input_tokens"]
+            + usage["output_tokens"]
+            + usage["cache_read_tokens"]
+            + usage["cache_write_tokens"]
+            + usage["reasoning_tokens"]
+        )
+        return {
+            "session_id": session_id,
+            "usage": usage,
+            "prompt_tokens": usage["input_tokens"],
+            "completion_tokens": usage["output_tokens"],
+            "total_tokens": usage["total_tokens"],
+            "cache_read_tokens": usage["cache_read_tokens"],
+            "cache_write_tokens": usage["cache_write_tokens"],
+            "reasoning_tokens": usage["reasoning_tokens"],
+            "estimated_cost_usd": usage["estimated_cost_usd"],
+            "available": usage["available"],
+        }
+
+    @staticmethod
+    def _short_model_name(model_id: str) -> str:
+        if not model_id:
+            return "—"
+        short = model_id.split("/")[-1]
+        return short if len(short) <= 28 else short[:25] + "..."
+
+    @staticmethod
+    def _read_proc_meminfo() -> dict[str, int]:
+        info: dict[str, int] = {}
+        try:
+            with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+                for line in fh:
+                    key, _, raw = line.partition(":")
+                    value = raw.strip().split()[0]
+                    if value.isdigit():
+                        info[key] = int(value) * 1024
+        except Exception:
+            return {}
+        return info
+
+    def _health_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": "ok", "platform": "hermes-agent"}
+        try:
+            payload["uptime"] = max(0, int(time.time() - self.start_time))
+        except Exception:
+            payload["uptime"] = 0
+
+        try:
+            load = os.getloadavg()
+            payload["load_avg"] = [round(v, 2) for v in load]
+        except Exception:
+            payload["load_avg"] = None
+
+        try:
+            mem = self._read_proc_meminfo()
+            total = mem.get("MemTotal", 0)
+            available = mem.get("MemAvailable", 0) or mem.get("MemFree", 0)
+            used = max(0, total - available) if total else 0
+            payload["memory_total_bytes"] = total
+            payload["memory_used_bytes"] = used
+            payload["memory_available_bytes"] = available
+            payload["memory_percent"] = round((used / total) * 100, 1) if total else None
+        except Exception:
+            payload["memory_percent"] = None
+
+        try:
+            disk = os.statvfs("/")
+            total = disk.f_frsize * disk.f_blocks
+            free = disk.f_frsize * disk.f_bavail
+            used = max(0, total - free)
+            payload["disk_total_bytes"] = total
+            payload["disk_used_bytes"] = used
+            payload["disk_free_bytes"] = free
+            payload["disk_percent"] = round((used / total) * 100, 1) if total else None
+        except Exception:
+            payload["disk_percent"] = None
+
+        try:
+            cpu_count = os.cpu_count() or 1
+            load = payload.get("load_avg")
+            one_min = float(load[0]) if isinstance(load, list) and load else 0.0
+            payload["cpu_percent"] = round(min(100.0, max(0.0, (one_min / cpu_count) * 100.0)), 1)
+        except Exception:
+            payload["cpu_percent"] = None
+
+        return payload
+
+    def _processes_payload(self) -> dict[str, Any]:
+        try:
+            from tools.process_registry import process_registry
+            return {"processes": process_registry.list_sessions()}
+        except Exception as exc:
+            logger.debug("Failed to list background processes for miniapp: %s", exc)
+            return {"processes": []}
+
+    @staticmethod
+    def _infer_data_url_suffix(mime_type: str) -> str:
+        guessed = mimetypes.guess_extension(mime_type or "")
+        if guessed:
+            return guessed
+        if mime_type.startswith("image/"):
+            return ".png"
+        if mime_type == "application/pdf":
+            return ".pdf"
+        if mime_type in {"application/json", "text/json"}:
+            return ".json"
+        if mime_type in {"text/csv", "application/csv"}:
+            return ".csv"
+        if mime_type.startswith("text/"):
+            return ".txt"
+        return ".bin"
+
+    def _materialize_data_url(self, url: str) -> tuple[str, str] | None:
+        if not isinstance(url, str) or not url.startswith("data:"):
+            return None
+        header, sep, payload = url.partition(",")
+        if not sep:
+            return None
+        mime_type = (header[5:].split(";", 1)[0] or "application/octet-stream").strip()
+        is_base64 = ";base64" in header
+        try:
+            blob = base64.b64decode(payload) if is_base64 else payload.encode("utf-8")
+        except Exception:
+            return None
+        suffix = self._infer_data_url_suffix(mime_type)
+        fd, path = tempfile.mkstemp(prefix="hermes-miniapp-", suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(blob)
+        return path, mime_type
+
+    async def _describe_content_part(self, part: dict[str, Any]) -> str:
+        part_type = str(part.get("type") or "").strip()
+        if part_type == "text":
+            return str(part.get("text") or "").strip()
+        if part_type != "image_url":
+            return ""
+
+        image_payload = part.get("image_url")
+        if isinstance(image_payload, dict):
+            image_url = str(image_payload.get("url") or "").strip()
+        else:
+            image_url = str(image_payload or "").strip()
+        if not image_url:
+            return ""
+
+        materialized = self._materialize_data_url(image_url)
+        file_path = None
+        mime_type = None
+        if materialized:
+            file_path, mime_type = materialized
+        elif image_url.startswith(("http://", "https://")):
+            file_path = image_url
+            mime_type = "image/remote"
+
+        if not file_path:
+            return "[The user attached an unsupported inline file payload.]"
+
+        if mime_type and mime_type.startswith("image/"):
+            try:
+                from tools.vision_tools import vision_analyze_tool
+                result_json = await vision_analyze_tool(image_url=file_path, question=_MINIAPP_IMAGE_ANALYSIS_PROMPT)
+                result = json.loads(result_json)
+                if result.get("success") and result.get("analysis"):
+                    description = str(result["analysis"]).strip()
+                    return (
+                        f"[The user attached an image. Here's what it contains:\n{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with image_url: {file_path}]"
+                    )
+            except Exception as exc:
+                logger.debug("Miniapp image preprocessing failed: %s", exc)
+            return (
+                f"[The user attached an image, but automatic analysis was unavailable. "
+                f"You can inspect it with vision_analyze using image_url: {file_path}]"
+            )
+
+        try:
+            if mime_type in {"application/json", "text/json", "text/plain", "text/csv", "application/csv"} or (mime_type or "").startswith("text/"):
+                with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(6000)
+                label = mime_type or "text file"
+                return f"[The user attached a {label}. Contents:\n{text}]"
+        except Exception as exc:
+            logger.debug("Miniapp text attachment preprocessing failed: %s", exc)
+
+        if mime_type == "application/pdf":
+            return (
+                f"[The user attached a PDF at {file_path}. PDF OCR is not automatic here; "
+                f"use OCR/vision tools if you need to inspect it closely.]"
+            )
+
+        return f"[The user attached a file at {file_path}.]"
+
+    async def _normalize_message_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                normalized = await self._describe_content_part(item)
+                if normalized:
+                    parts.append(normalized)
+            elif item is not None:
+                parts.append(str(item))
+        return "\n\n".join(part for part in parts if part).strip()
+
+    def _build_help_text(self) -> str:
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        commands = [cmd for cmd in COMMAND_REGISTRY if not cmd.cli_only]
+        lines = ["Available commands:"]
+        for cmd in commands[:12]:
+            usage = f" /{cmd.name} {cmd.args_hint}" if cmd.args_hint else f" /{cmd.name}"
+            lines.append(f"- {usage.strip()}: {cmd.description}")
+        if len(commands) > 12:
+            lines.append("Use /commands to browse the full list.")
+        return "\n".join(lines)
+
+    def _build_commands_text(self) -> str:
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        commands = [cmd for cmd in COMMAND_REGISTRY if not cmd.cli_only]
+        return "\n".join(f"/{cmd.name} — {cmd.description}" for cmd in commands)
+
+    def _execute_supported_command(self, command_text: str, session_id: str | None) -> tuple[Optional[dict[str, Any]], Optional[str], int]:
+        from hermes_cli.commands import COMMAND_REGISTRY, resolve_command
+
+        raw = (command_text or "").strip()
+        if not raw:
+            return None, "Command is required", 400
+        if not raw.startswith("/"):
+            raw = f"/{raw}"
+
+        command_name = raw[1:].split(maxsplit=1)[0]
+        resolved = resolve_command(command_name)
+        if resolved is None or resolved.cli_only:
+            return None, "Unknown or unsupported command", 400
+
+        canonical = resolved.name
+        output = None
+        if canonical == "help":
+            output = self._build_help_text()
+        elif canonical == "commands":
+            output = self._build_commands_text()
+        elif canonical == "usage":
+            if not session_id:
+                return None, "X-Hermes-Session-Id header is required for /usage", 400
+            usage_payload = self._session_usage_payload(session_id)
+            usage = usage_payload["usage"]
+            output = (
+                "Session usage\n"
+                f"Input tokens: {usage['input_tokens']}\n"
+                f"Output tokens: {usage['output_tokens']}\n"
+                f"Cache read tokens: {usage['cache_read_tokens']}\n"
+                f"Total tokens: {usage['total_tokens']}"
+            )
+        elif canonical == "status":
+            output = f"API server listening on {self._host}:{self._port}"
+        elif canonical == "profile":
+            output = f"Active API model: {self._model_name or 'hermes-agent'}"
+        else:
+            return None, "Unknown or unsupported command", 400
+
+        command_meta = {
+            "canonical": canonical,
+            "input": raw,
+            "aliases": list(resolved.aliases),
+        }
+        return {"ok": True, "command": command_meta, "output": output}, None, 200
+
+    async def _handle_model_info(self, request: "web.Request") -> "web.Response":
+        auth_err = self._require_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(self._build_model_info_payload())
+
+    async def _handle_session_usage(self, request: "web.Request") -> "web.Response":
+        auth_err = self._require_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        return web.json_response(self._session_usage_payload(session_id))
+
+    async def _handle_commands_index(self, request: "web.Request") -> "web.Response":
+        auth_context, auth_err = self._authenticate_request(request)
+        if auth_err:
+            return auth_err
+
+        from hermes_cli.commands import COMMAND_REGISTRY
+
+        commands = [
+            {
+                "name": cmd.name,
+                "description": cmd.description,
+                "category": cmd.category,
+                "args_hint": cmd.args_hint,
+                "aliases": list(cmd.aliases),
+            }
+            for cmd in COMMAND_REGISTRY
+            if not cmd.cli_only
+        ]
+        return web.json_response({"commands": commands, "auth": auth_context})
+
+    async def _handle_command(self, request: "web.Request") -> "web.Response":
+        auth_context, auth_err = self._authenticate_request(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        command_text = body.get("command")
+        if not command_text and isinstance(body.get("payload"), dict):
+            payload = body["payload"]
+            command_name = str(payload.get("name") or "").strip()
+            args = str(payload.get("args") or "").strip()
+            command_text = f"/{command_name} {args}".strip()
+
+        session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        result, error_message, status = self._execute_supported_command(command_text or "", session_id or None)
+        if error_message:
+            return web.json_response({"error": error_message}, status=status)
+
+        result["session_id"] = session_id or None
+        result["auth"] = auth_context
+        return web.json_response(result, status=status)
+
+    async def _handle_miniapp_index(self, request: "web.Request") -> "web.Response":
+        html = read_miniapp_asset("index.html")
+        return web.Response(body=html, content_type="text/html")
 
     # ------------------------------------------------------------------
     # Agent creation helper
@@ -503,7 +951,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        return web.json_response(self._health_payload())
+
+    async def _handle_processes(self, request: "web.Request") -> "web.Response":
+        auth_err = self._require_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(self._processes_payload())
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -553,7 +1007,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = await self._normalize_message_content(msg.get("content", ""))
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -585,16 +1039,15 @@ class APIServerAdapter(BasePlatformAdapter):
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
+            auth_context = request.get("auth_context") if hasattr(request, "get") else None
+            if not auth_context:
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
+                    "request was not authenticated."
                 )
                 return web.json_response(
                     _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
+                        "Session continuation requires an authenticated request."
                     ),
                     status=403,
                 )
@@ -1740,6 +2193,14 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_get("/api/model-info", self._handle_model_info)
+            self._app.router.add_get("/api/session-usage", self._handle_session_usage)
+            self._app.router.add_get("/api/processes", self._handle_processes)
+            self._app.router.add_get("/api/commands", self._handle_commands_index)
+            self._app.router.add_post("/api/command", self._handle_command)
+            self._app.router.add_get("/miniapp", self._handle_miniapp_index)
+            self._app.router.add_get("/miniapp/", self._handle_miniapp_index)
+            self._app.router.add_get("/miniapp/index.html", self._handle_miniapp_index)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

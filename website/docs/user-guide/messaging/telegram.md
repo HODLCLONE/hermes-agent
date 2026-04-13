@@ -112,6 +112,12 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Experimental Telegram Mini App
+
+Hermes also ships an optional built-in Telegram Mini App surface served by the API server at `/miniapp/`.
+
+See [Telegram Mini App](./telegram-miniapp.md) for setup, HTTPS exposure, BotFather menu button configuration, and Mini App auth troubleshooting.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
