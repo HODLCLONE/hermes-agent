@@ -2083,19 +2083,32 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _is_command_center_chat(self, message: Message) -> bool:
+        chat = getattr(message, "chat", None)
+        title = getattr(chat, "title", None)
+        if not title:
+            return False
+        normalized = re.sub(r"\s+", " ", str(title)).strip().casefold()
+        return normalized == "command center"
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
-        DMs remain unrestricted. Group/supergroup messages are accepted when:
+        DMs remain unrestricted. Most group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the message is a command
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        The special "Command Center" group is always strict to avoid bot loops:
+        it only responds to direct replies to the bot or explicit @mentions.
         """
         if not self._is_group_chat(message):
             return True
+        if self._is_command_center_chat(message):
+            return self._is_reply_to_bot(message) or self._message_mentions_bot(message)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
