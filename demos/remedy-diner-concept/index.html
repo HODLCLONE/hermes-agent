@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remedy Diner — Conversion Path Concept Preview</title>
+  <meta name="description" content="A HODLHQ concept preview showing a tighter mobile-first homepage for Remedy Diner." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@700;800;900&family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --cream:#fff7e8; --paper:#fffdf7; --ink:#20150f; --muted:#6f5f52; --coffee:#4a2d1d;
+      --red:#bd251f; --red-dark:#911b16; --gold:#f4ba3b; --mint:#e7f2df; --line:#ead9c5;
+      --shadow:0 20px 70px rgba(57,31,18,.18); --radius:28px;
+    }
+    *{box-sizing:border-box} html{scroll-behavior:smooth} body{margin:0;background:var(--cream);color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.45;}
+    a{color:inherit;text-decoration:none} .concept{position:sticky;top:0;z-index:20;background:#20150f;color:#fff;padding:8px 18px;text-align:center;font-size:13px;letter-spacing:.02em} .concept b{color:var(--gold)}
+    header{position:sticky;top:34px;z-index:19;background:rgba(255,247,232,.88);backdrop-filter:blur(16px);border-bottom:1px solid rgba(74,45,29,.12)}
+    .nav{max-width:1180px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:14px 18px;gap:16px}.brand{display:flex;align-items:center;gap:12px;font-weight:900;letter-spacing:-.03em}.brand-mark{width:46px;height:46px;border-radius:50%;background:var(--red);color:#fff;display:grid;place-items:center;font-family:Fraunces,serif;font-size:24px;box-shadow:inset 0 0 0 3px rgba(255,255,255,.28)}
+    .navlinks{display:flex;gap:18px;color:var(--muted);font-weight:700;font-size:14px}.actions{display:flex;gap:10px}.btn{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;padding:13px 18px;font-weight:900;border:2px solid transparent;transition:.2s transform,.2s box-shadow,.2s background}.btn:hover{transform:translateY(-1px)}.btn-primary{background:var(--red);color:#fff;box-shadow:0 12px 30px rgba(189,37,31,.28)}.btn-secondary{background:#fff8;border-color:var(--line);color:var(--coffee)}.btn-gold{background:var(--gold);color:#2a170e}.hero{max-width:1180px;margin:0 auto;padding:56px 18px 30px;display:grid;grid-template-columns:minmax(0,1.06fr) minmax(330px,.94fr);gap:38px;align-items:center}.eyebrow{display:inline-flex;align-items:center;gap:9px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--coffee);font-weight:900;font-size:13px;box-shadow:0 8px 25px rgba(57,31,18,.08)}.dot{width:9px;height:9px;background:#2fb45a;border-radius:50%;box-shadow:0 0 0 5px rgba(47,180,90,.12)}h1{font-family:Fraunces,Georgia,serif;font-size:clamp(46px,8vw,92px);line-height:.88;letter-spacing:-.06em;margin:20px 0 18px}.hero p{font-size:20px;color:var(--muted);max-width:650px}.cta-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:28px 0 18px}.cta-card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:17px 15px;box-shadow:0 10px 24px rgba(57,31,18,.08)}.cta-card strong{display:block;font-size:18px;margin-bottom:4px}.cta-card span{color:var(--muted);font-size:13px;font-weight:700}.cta-card.hot{background:var(--red);color:#fff;border-color:var(--red)}.cta-card.hot span{color:#ffe5d9}.meta{display:flex;flex-wrap:wrap;gap:10px;color:var(--coffee);font-weight:800}.pill{background:#fff;border:1px solid var(--line);border-radius:999px;padding:9px 12px}.photo-stack{position:relative}.hero-photo{min-height:610px;border-radius:36px;background:linear-gradient(180deg,rgba(32,21,15,.05),rgba(32,21,15,.45)),url('https://remedydinerny.com/pluto-images/funnel/images/0ad850b4-bb4f-4bab-9c28-1cc8799a48a5?w=1200&quality=70&fit=cover') center/cover;box-shadow:var(--shadow);overflow:hidden}.floating{position:absolute;left:-18px;bottom:34px;background:#fff;border:1px solid var(--line);border-radius:26px;padding:20px;max-width:300px;box-shadow:var(--shadow)}.floating h3{margin:0 0 8px;font-family:Fraunces,serif;font-size:28px}.floating p{margin:0;color:var(--muted);font-weight:700}.section{max-width:1180px;margin:0 auto;padding:54px 18px}.section-head{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:22px}.section h2{font-family:Fraunces,serif;font-size:clamp(34px,5vw,58px);line-height:.95;letter-spacing:-.04em;margin:0}.section-lede{color:var(--muted);font-size:18px;max-width:560px}.menu-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.dish{background:#fff;border:1px solid var(--line);border-radius:26px;overflow:hidden;box-shadow:0 12px 38px rgba(57,31,18,.08)}.dish img{width:100%;height:210px;object-fit:cover;display:block}.dish div{padding:18px}.dish h3{margin:0 0 6px;font-size:21px}.dish p{margin:0;color:var(--muted);font-weight:700}.split{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:stretch}.panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);padding:30px;box-shadow:0 12px 40px rgba(57,31,18,.08)}.panel.red{background:var(--red);color:#fff}.panel.red p,.panel.red li{color:#ffe6df}.panel h3{font-family:Fraunces,serif;font-size:34px;margin:0 0 12px}.panel p{color:var(--muted);font-size:17px}.checklist{padding:0;margin:18px 0 0;list-style:none}.checklist li{padding:10px 0 10px 34px;position:relative;color:var(--muted);font-weight:700;border-top:1px solid rgba(111,95,82,.16)}.checklist li:before{content:'✓';position:absolute;left:0;color:var(--red);font-weight:900}.panel.red .checklist li:before{color:var(--gold)}.visit{background:#20150f;color:#fff;border-radius:36px;padding:34px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center;box-shadow:var(--shadow)}.visit h2{color:#fff}.visit p{color:#ead9c5;margin:10px 0 0}.mobile-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;background:#fff;border-top:1px solid var(--line);padding:10px;grid-template-columns:repeat(4,1fr);gap:8px}.mobile-bar a{background:var(--red);color:#fff;border-radius:16px;padding:11px 6px;text-align:center;font-size:12px;font-weight:900}.mobile-bar a:nth-child(2){background:#20150f}.mobile-bar a:nth-child(3){background:var(--gold);color:#20150f}.mobile-bar a:nth-child(4){background:#2f7d4c}.footer{max-width:1180px;margin:0 auto;padding:28px 18px 96px;color:var(--muted);font-size:14px}.toast{position:fixed;right:18px;bottom:18px;background:#20150f;color:#fff;border-radius:18px;padding:14px 16px;font-weight:800;box-shadow:var(--shadow);opacity:0;transform:translateY(10px);transition:.25s;pointer-events:none}.toast.show{opacity:1;transform:translateY(0)}
+    @media(max-width:900px){header{top:31px}.navlinks,.actions{display:none}.hero{grid-template-columns:1fr;padding-top:36px}.hero-photo{min-height:430px}.floating{left:14px;right:14px;bottom:16px}.cta-grid{grid-template-columns:repeat(2,1fr)}.menu-strip,.split{grid-template-columns:1fr}.section-head{display:block}.visit{grid-template-columns:1fr}.mobile-bar{display:grid}body{padding-bottom:68px}}
+  </style>
+</head>
+<body>
+  <div class="concept">Concept preview prepared by <b>HODLHQ</b> — not the live Remedy Diner website.</div>
+  <header>
+    <nav class="nav" aria-label="Concept navigation">
+      <a class="brand" href="#top"><span class="brand-mark">R</span><span>Remedy Diner</span></a>
+      <div class="navlinks"><a href="#menu">Menu</a><a href="#reserve">Reserve</a><a href="#catering">Catering</a><a href="#rewards">Rewards</a></div>
+      <div class="actions"><a class="btn btn-secondary" href="tel:+12126775110">Call</a><a class="btn btn-primary" href="https://remedydinerny.com/menu?dialogState=orderDetails">Order online</a></div>
+    </nav>
+  </header>
+  <main id="top">
+    <section class="hero">
+      <div>
+        <span class="eyebrow"><span class="dot"></span>Open 24/7 at 245 E Houston St</span>
+        <h1>Classic LES diner. Faster paths to every order.</h1>
+        <p>A tighter homepage concept that keeps Remedy’s New York diner identity, then makes the four money paths impossible to miss: order, reserve, cater, and rewards.</p>
+        <div class="cta-grid" aria-label="Primary conversion paths">
+          <a class="cta-card hot" href="https://remedydinerny.com/menu?dialogState=orderDetails"><strong>Order now</strong><span>Pickup or delivery</span></a>
+          <a class="cta-card" href="https://remedydinerny.com/reservation"><strong>Reserve</strong><span>Plan your table</span></a>
+          <a class="cta-card" href="https://remedydinerny.com/catering"><strong>Catering</strong><span>Events & offices</span></a>
+          <a class="cta-card" href="https://remedydinervawz.app.ordersave.com/download-app"><strong>Rewards</strong><span>Earn on orders</span></a>
+        </div>
+        <div class="meta"><span class="pill">Family owned since 2007</span><span class="pill">Breakfast • Lunch • Dinner</span><span class="pill">Late-night comfort food</span></div>
+      </div>
+      <div class="photo-stack">
+        <div class="hero-photo" role="img" aria-label="Remedy Diner food and diner atmosphere"></div>
+        <div class="floating"><h3>24 hours. One-tap decisions.</h3><p>Mobile visitors get hours, location, ordering, reservations, catering, and rewards above the fold.</p></div>
+      </div>
+    </section>
+    <section class="section" id="menu">
+      <div class="section-head"><h2>Popular plates, quicker menu discovery.</h2><p class="section-lede">Featured items stay visual, but the path to the full menu and order modal is repeated where hungry visitors actually decide.</p></div>
+      <div class="menu-strip">
+        <article class="dish"><img src="https://remedydinerny.com/pluto-images/funnel/images/64f5d15b-43a0-403a-bf8d-02cb7d8aca95.jpg?w=640&h=440&fit=cover" alt="Classic Chicken Pot Pie"><div><h3>Classic Chicken Pot Pie</h3><p>Comfort classic with a direct order path.</p></div></article>
+        <article class="dish"><img src="https://remedydinerny.com/pluto-images/funnel/images/981e2441-85d3-4ba3-a1d1-154e1c82d726.png?w=640&h=440&fit=cover" alt="Turkey Club"><div><h3>Turkey Club</h3><p>Familiar diner staple for lunch orders.</p></div></article>
+        <article class="dish"><img src="https://remedydinerny.com/pluto-images/funnel/images/b7bede21-c100-4d41-a456-1d7d7b5b199c?w=640&h=440&fit=cover" alt="French toast"><div><h3>French Toast</h3><p>Breakfast energy all day and night.</p></div></article>
+      </div>
+    </section>
+    <section class="section split">
+      <article class="panel" id="reserve"><h3>Reservations without digging.</h3><p>The current site has a reservation path; this concept gives it the same visual weight as online ordering for visitors planning ahead.</p><ul class="checklist"><li>Dedicated reserve CTA in sticky nav and hero</li><li>Clear expectation: book ahead, arrive smoothly</li><li>Address and phone repeated beside the action</li></ul><p><a class="btn btn-primary" href="https://remedydinerny.com/reservation">Book a table</a></p></article>
+      <article class="panel red" id="catering"><h3>Catering gets its own lane.</h3><p>Office lunches, small gatherings, and late-night group orders should not feel hidden behind the normal menu.</p><ul class="checklist"><li>Simple catering entry point</li><li>Use cases named up front</li><li>Phone/email fallback for custom orders</li></ul><p><a class="btn btn-gold" href="https://remedydinerny.com/catering">Get catering info</a></p></article>
+    </section>
+    <section class="section" id="rewards">
+      <div class="visit">
+        <div><h2>Rewards + app download, connected to ordering.</h2><p>The rewards program becomes a reason to order direct instead of a detached footer/module. Simple copy: earn points every time you order online.</p></div>
+        <a class="btn btn-gold" href="https://remedydinervawz.app.ordersave.com/download-app">Open rewards app</a>
+      </div>
+    </section>
+  </main>
+  <div class="mobile-bar" aria-label="Mobile primary actions"><a href="https://remedydinerny.com/menu?dialogState=orderDetails">Order</a><a href="https://remedydinerny.com/reservation">Reserve</a><a href="https://remedydinerny.com/catering">Catering</a><a href="https://remedydinervawz.app.ordersave.com/download-app">Rewards</a></div>
+  <footer class="footer">Prepared as a one-page HODLHQ concept preview using public Remedy Diner information. All action links point back to Remedy Diner’s existing live ordering, reservation, catering, and app/rewards destinations.</footer>
+  <div class="toast" id="toast">Opening Remedy Diner’s live path…</div>
+  <script>
+    document.querySelectorAll('a[href^="https://remedydinerny.com"],a[href*="ordersave.com"]').forEach(a=>a.addEventListener('click',()=>{const t=document.getElementById('toast');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600)}));
+  </script>
+</body>
+</html>

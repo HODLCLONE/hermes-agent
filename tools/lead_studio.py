@@ -26,6 +26,8 @@ STAGE_SEQUENCE = (
     "operator_approved",
     "approval_rejected",
     "revision_requested",
+    "demo_built",
+    "demo_checked",
     "customer_sent",
     "outreach_blocked",
 )
@@ -85,6 +87,8 @@ class LeadSnapshot:
     operator_approved: bool
     approval_rejected: bool
     revision_requested: bool
+    demo_built: bool
+    demo_checked: bool
     customer_sent: bool
     outreach_blocked: bool
     events: list[dict[str, Any]]
@@ -196,6 +200,7 @@ class CustomerOutreachDispatcher:
         filmed = snapshot.stage_payloads.get("filmed", {})
         business_name = scouted.get("business_name", snapshot.lead_id)
         pitch_text = payload.get("pitch_text") or pitched.get("pitch_text") or ""
+        demo_url = self._demo_url(snapshot, payload)
         build_summary = payload.get("build_summary") or built.get("opportunity_summary") or ""
         work_scope = payload.get("work_scope") or built.get("work_scope") or []
         evidence = payload.get("evidence") or filmed.get("evidence") or []
@@ -227,15 +232,30 @@ class CustomerOutreachDispatcher:
             parts.extend(["", "Suggested scope:", scope_text])
         if evidence_text:
             parts.extend(["", "Why this is grounded:", evidence_text])
+        if demo_url:
+            parts.extend(["", "Preview link:", demo_url])
         parts.extend([
             "",
-            "If helpful, we can send over the tighter homepage / conversion-path concept for review.",
+            "If helpful, we'd be glad to walk through the tighter homepage / conversion-path concept.",
             "",
             "- HODLHQ",
         ])
         return "\n".join(parts).strip() + "\n"
 
+    def _demo_url(self, snapshot: LeadSnapshot, payload: dict[str, Any]) -> str:
+        candidate = (
+            payload.get("demo_url")
+            or payload.get("demo_link")
+            or payload.get("build_url")
+            or snapshot.stage_payloads.get("demo_checked", {}).get("demo_url")
+            or snapshot.stage_payloads.get("demo_built", {}).get("demo_url")
+        )
+        return str(candidate or "").strip()
+
     def send_outreach(self, snapshot: LeadSnapshot, payload: dict[str, Any]) -> dict[str, Any]:
+        demo_url = self._demo_url(snapshot, payload)
+        if not demo_url:
+            raise CustomerOutreachError("Customer outreach requires a reviewable demo_url/build_url")
         channel = str(payload.get("channel") or "email").lower()
         if channel != "email":
             result = payload.get("delivery_result") or {"success": True, "platform": channel, "mode": "record_only"}
@@ -245,6 +265,7 @@ class CustomerOutreachDispatcher:
                 "cc": payload.get("cc") or [],
                 "subject": payload.get("subject"),
                 "message": payload.get("message") or payload.get("pitch_text"),
+                "demo_url": demo_url,
                 "result": result,
             }
 
@@ -267,6 +288,7 @@ class CustomerOutreachDispatcher:
             "cc": cc,
             "subject": subject,
             "message": message,
+            "demo_url": demo_url,
             "result": result,
         }
 
@@ -437,6 +459,8 @@ class LeadStudioStore:
         operator_approved = False
         approval_rejected = False
         revision_requested = False
+        demo_built = False
+        demo_checked = False
         customer_sent = False
         outreach_blocked = False
         stage_payloads: dict[str, dict[str, Any]] = {}
@@ -467,6 +491,14 @@ class LeadStudioStore:
                 revision_requested = True
                 current_state = "revision_requested"
                 stage_payloads["revision_requested"] = dict(event.get("payload") or {})
+            elif kind == "demo_built":
+                demo_built = True
+                current_state = "demo_built"
+                stage_payloads["demo_built"] = dict(event.get("payload") or {})
+            elif kind == "demo_checked":
+                demo_checked = True
+                current_state = "demo_checked"
+                stage_payloads["demo_checked"] = dict(event.get("payload") or {})
             elif kind == "customer_sent":
                 customer_sent = True
                 current_state = "customer_sent"
@@ -485,6 +517,8 @@ class LeadStudioStore:
             operator_approved=operator_approved,
             approval_rejected=approval_rejected,
             revision_requested=revision_requested,
+            demo_built=demo_built,
+            demo_checked=demo_checked,
             customer_sent=customer_sent,
             outreach_blocked=outreach_blocked,
             events=events,
@@ -624,17 +658,82 @@ class LeadStudioStore:
         )
         return self.load_snapshot(lead_id)
 
-    def record_customer_outreach_attempt(self, lead_id: str, owner_id: str, channel: str, recipient: Optional[str]) -> None:
+
+    def record_demo_built(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
         snapshot = self.load_snapshot(lead_id)
         if snapshot.current_state not in {"operator_approved", "outreach_blocked"}:
             raise StageOrderError(
-                f"Lead {lead_id} cannot send customer outreach from {snapshot.current_state}; expected operator_approved or outreach_blocked"
+                f"Lead {lead_id} cannot record demo_built from {snapshot.current_state}; expected operator_approved or outreach_blocked"
+            )
+        demo_url = str(payload.get("demo_url") or payload.get("demo_link") or payload.get("build_url") or "").strip()
+        if not demo_url:
+            raise StageOrderError("demo_built requires a reviewable demo_url/build_url")
+        artifact_payload = {
+            **payload,
+            "demo_url": demo_url,
+            "lead_id": lead_id,
+            "owner_id": owner_id,
+            "owner_role": "demo_builder",
+            "built_at": self._now().isoformat(),
+            "recorded_at": self._now().isoformat(),
+        }
+        artifact_path = self._write_artifact(lead_id, "demo_built", artifact_payload)
+        self._append_event(
+            lead_id,
+            {
+                "kind": "demo_built",
+                "state": "demo_built",
+                "owner_id": owner_id,
+                "recorded_at": self._now().isoformat(),
+                "artifact_path": artifact_path,
+                "payload": artifact_payload,
+            },
+        )
+        return self.load_snapshot(lead_id)
+
+    def record_demo_checked(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
+        snapshot = self.load_snapshot(lead_id)
+        if snapshot.current_state != "demo_built":
+            raise StageOrderError(
+                f"Lead {lead_id} cannot record demo_checked from {snapshot.current_state}; expected demo_built"
+            )
+        demo_url = str(payload.get("demo_url") or snapshot.stage_payloads.get("demo_built", {}).get("demo_url") or "").strip()
+        if not demo_url:
+            raise StageOrderError("demo_checked requires a reviewable demo_url/build_url")
+        artifact_payload = {
+            **payload,
+            "demo_url": demo_url,
+            "lead_id": lead_id,
+            "owner_id": owner_id,
+            "owner_role": "demo_checker",
+            "checked_at": self._now().isoformat(),
+            "recorded_at": self._now().isoformat(),
+        }
+        artifact_path = self._write_artifact(lead_id, "demo_checked", artifact_payload)
+        self._append_event(
+            lead_id,
+            {
+                "kind": "demo_checked",
+                "state": "demo_checked",
+                "owner_id": owner_id,
+                "recorded_at": self._now().isoformat(),
+                "artifact_path": artifact_path,
+                "payload": artifact_payload,
+            },
+        )
+        return self.load_snapshot(lead_id)
+
+    def record_customer_outreach_attempt(self, lead_id: str, owner_id: str, channel: str, recipient: Optional[str]) -> None:
+        snapshot = self.load_snapshot(lead_id)
+        if snapshot.current_state not in {"demo_checked", "outreach_blocked"}:
+            raise StageOrderError(
+                f"Lead {lead_id} cannot send customer outreach from {snapshot.current_state}; expected demo_checked or outreach_blocked"
             )
         self._append_event(
             lead_id,
             {
                 "kind": "customer_outreach_attempted",
-                "state": "operator_approved",
+                "state": snapshot.current_state,
                 "owner_id": owner_id,
                 "recorded_at": self._now().isoformat(),
                 "payload": {
@@ -649,9 +748,9 @@ class LeadStudioStore:
 
     def record_customer_sent(self, lead_id: str, owner_id: str, dispatch: dict[str, Any]) -> LeadSnapshot:
         snapshot = self.load_snapshot(lead_id)
-        if snapshot.current_state not in {"operator_approved", "outreach_blocked"}:
+        if snapshot.current_state not in {"demo_checked", "outreach_blocked"}:
             raise StageOrderError(
-                f"Lead {lead_id} cannot record customer_sent from {snapshot.current_state}; expected operator_approved or outreach_blocked"
+                f"Lead {lead_id} cannot record customer_sent from {snapshot.current_state}; expected demo_checked or outreach_blocked"
             )
         artifact_payload = {
             **dispatch,
@@ -677,9 +776,9 @@ class LeadStudioStore:
 
     def record_outreach_blocked(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
         snapshot = self.load_snapshot(lead_id)
-        if snapshot.current_state != "operator_approved":
+        if snapshot.current_state not in {"operator_approved", "demo_checked"}:
             raise StageOrderError(
-                f"Lead {lead_id} cannot record outreach_blocked from {snapshot.current_state}; expected operator_approved"
+                f"Lead {lead_id} cannot record outreach_blocked from {snapshot.current_state}; expected operator_approved or demo_checked"
             )
         artifact_payload = {
             **payload,
@@ -771,15 +870,25 @@ class LeadStudioWorkflow:
         with self.store.claim(lead_id, owner_id, "operator"):
             return self.store.record_operator_decision(lead_id, owner_id, decision, payload)
 
+    def record_demo_built(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
+        """Record a reviewable demo/build URL after operator approval."""
+        with self.store.claim(lead_id, owner_id, "demo_builder"):
+            return self.store.record_demo_built(lead_id, owner_id, payload)
+
+    def record_demo_checked(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
+        """Record QA approval for the demo/build URL before customer outreach."""
+        with self.store.claim(lead_id, owner_id, "demo_checker"):
+            return self.store.record_demo_checked(lead_id, owner_id, payload)
+
     def send_customer_outreach(self, lead_id: str, owner_id: str, payload: dict[str, Any]) -> LeadSnapshot:
         """Send approved customer outreach and record a durable customer_sent receipt."""
         with self.store.claim(lead_id, owner_id, "outreach"):
             current_snapshot = self.store.load_snapshot(lead_id)
             if current_snapshot.customer_sent:
                 raise StageOrderError(f"Lead {lead_id} already reached customer_sent")
-            if current_snapshot.current_state not in {"operator_approved", "outreach_blocked"}:
+            if current_snapshot.current_state not in {"demo_checked", "outreach_blocked"}:
                 raise StageOrderError(
-                    f"Lead {lead_id} cannot send customer outreach from {current_snapshot.current_state}; expected operator_approved or outreach_blocked"
+                    f"Lead {lead_id} cannot send customer outreach from {current_snapshot.current_state}; expected demo_checked or outreach_blocked"
                 )
             channel = str(payload.get("channel") or "email").lower()
             recipient = payload.get("recipient") or payload.get("to") or payload.get("contact")
@@ -791,9 +900,9 @@ class LeadStudioWorkflow:
         """Record that approved customer outreach is blocked and why."""
         with self.store.claim(lead_id, owner_id, "outreach"):
             current_snapshot = self.store.load_snapshot(lead_id)
-            if current_snapshot.current_state != "operator_approved":
+            if current_snapshot.current_state not in {"operator_approved", "demo_checked"}:
                 raise StageOrderError(
-                    f"Lead {lead_id} cannot block customer outreach from {current_snapshot.current_state}; expected operator_approved"
+                    f"Lead {lead_id} cannot block customer outreach from {current_snapshot.current_state}; expected operator_approved or demo_checked"
                 )
             return self.store.record_outreach_blocked(lead_id, owner_id, payload)
 

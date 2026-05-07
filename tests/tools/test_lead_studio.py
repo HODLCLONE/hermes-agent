@@ -44,6 +44,7 @@ class RecordingOutreachDispatcher:
             "cc": payload.get("cc") or ["hodlceo.eth@gmail.com"],
             "subject": payload.get("subject", "Test subject"),
             "message": payload.get("message") or payload.get("pitch_text") or "Pitch body",
+            "demo_url": payload.get("demo_url") or snapshot.stage_payloads.get("demo_checked", {}).get("demo_url"),
             "result": {"success": True, "provider_message_id": "email-123"},
         }
         self.calls.append(rendered)
@@ -294,6 +295,26 @@ def _run_to_approval(workflow: LeadStudioWorkflow, lead_id: str, sample_payloads
     return workflow.check_lead(lead_id, "checker-agent", sample_payloads["checked"])
 
 
+def _record_demo_ready(workflow: LeadStudioWorkflow, lead_id: str, demo_url: str = "https://demo.example.com/lead"):
+    built = workflow.record_demo_built(
+        lead_id,
+        "demo-builder-agent",
+        {
+            "demo_url": demo_url,
+            "demo_summary": "Single-page conversion preview with clearer primary CTAs.",
+        },
+    )
+    assert built.current_state == "demo_built"
+    checked = workflow.record_demo_checked(
+        lead_id,
+        "demo-checker-agent",
+        {"demo_url": demo_url, "decision": "approved", "checker_note": "Demo URL loads and matches the approved scope."},
+    )
+    assert checked.current_state == "demo_checked"
+    assert checked.demo_checked is True
+    return checked
+
+
 def test_customer_outreach_records_durable_sent_state_with_email_cc(tmp_path: Path, sample_payloads: dict[str, dict]):
     store = LeadStudioStore(root=tmp_path / "lead-studio")
     outreach = RecordingOutreachDispatcher()
@@ -306,6 +327,7 @@ def test_customer_outreach_records_durable_sent_state_with_email_cc(tmp_path: Pa
     _run_to_approval(workflow, lead_id, sample_payloads)
     approved = workflow.record_operator_decision(lead_id, "operator-telegram", "approve", {"source": "telegram"})
     assert approved.current_state == "operator_approved"
+    _record_demo_ready(workflow, lead_id)
 
     snap = workflow.send_customer_outreach(
         lead_id,
@@ -323,6 +345,7 @@ def test_customer_outreach_records_durable_sent_state_with_email_cc(tmp_path: Pa
     assert sent["recipient"] == "owner@example.com"
     assert sent["cc"] == ["hodlceo.eth@gmail.com"]
     assert sent["message"] == "Here is the approved pitch/build."
+    assert sent["demo_url"] == "https://demo.example.com/lead"
     assert sent["result"]["success"] is True
     assert "sent_at" in sent
     assert len(list(store.artifacts_dir(lead_id).glob("*__customer_sent.json"))) == 1
@@ -403,6 +426,7 @@ def test_email_outreach_dispatcher_ccs_hodl_email_by_default(tmp_path: Path, sam
     _run_to_approval(workflow, lead_id, sample_payloads)
     approved = workflow.record_operator_decision(lead_id, "operator-telegram", "approve", {"source": "telegram"})
     assert approved.current_state == "operator_approved"
+    _record_demo_ready(workflow, lead_id)
 
     snap = workflow.send_customer_outreach(
         lead_id,
@@ -430,6 +454,7 @@ def test_email_outreach_dispatch_errors_are_not_marked_sent(tmp_path: Path, samp
     _run_to_approval(workflow, lead_id, sample_payloads)
     approved = workflow.record_operator_decision(lead_id, "operator-telegram", "approve", {"source": "telegram"})
     assert approved.current_state == "operator_approved"
+    _record_demo_ready(workflow, lead_id)
 
     with pytest.raises(CustomerOutreachError):
         workflow.send_customer_outreach(
@@ -439,5 +464,36 @@ def test_email_outreach_dispatch_errors_are_not_marked_sent(tmp_path: Path, samp
         )
 
     snap = store.load_snapshot(lead_id)
-    assert snap.current_state == "operator_approved"
+    assert snap.current_state == "demo_checked"
     assert snap.customer_sent is False
+
+
+def test_customer_outreach_requires_demo_checked_after_operator_approval(tmp_path: Path, sample_payloads: dict[str, dict]):
+    store = LeadStudioStore(root=tmp_path / "lead-studio")
+    workflow = LeadStudioWorkflow(store=store, dispatcher=RecordingDispatcher())
+    lead_id = "demo-required"
+    _run_to_approval(workflow, lead_id, sample_payloads)
+    approved = workflow.record_operator_decision(lead_id, "operator-telegram", "approve", {"source": "telegram"})
+    assert approved.current_state == "operator_approved"
+
+    with pytest.raises(StageOrderError):
+        workflow.send_customer_outreach(
+            lead_id,
+            "outreach-agent",
+            {"channel": "email", "recipient": "owner@example.com", "demo_url": "https://demo.example.com/lead"},
+        )
+
+
+def test_demo_built_and_checked_are_durable_gates(tmp_path: Path, sample_payloads: dict[str, dict]):
+    store = LeadStudioStore(root=tmp_path / "lead-studio")
+    workflow = LeadStudioWorkflow(store=store, dispatcher=RecordingDispatcher())
+    lead_id = "demo-gates"
+    _run_to_approval(workflow, lead_id, sample_payloads)
+    workflow.record_operator_decision(lead_id, "operator-telegram", "approve", {"source": "telegram"})
+
+    checked = _record_demo_ready(workflow, lead_id, "https://demo.example.com/remedy")
+
+    assert checked.stage_payloads["demo_built"]["demo_url"] == "https://demo.example.com/remedy"
+    assert checked.stage_payloads["demo_checked"]["decision"] == "approved"
+    assert len(list(store.artifacts_dir(lead_id).glob("*__demo_built.json"))) == 1
+    assert len(list(store.artifacts_dir(lead_id).glob("*__demo_checked.json"))) == 1
